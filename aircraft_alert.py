@@ -132,7 +132,7 @@ class AircraftMonitor:
     def load_favourites(self, filepath: str) -> set:
         try:
             with open(filepath, 'r') as f:
-                return {line.strip().upper() for line in f if line.strip()}
+                return {line.split('#')[0].strip().upper() for line in f if line.split('#')[0].strip()}
         except Exception as e:
             logger.error(f"Error loading favourites from {filepath}: {e}")
             return set()
@@ -206,7 +206,6 @@ class AircraftMonitor:
         # Load favourites from file if provided
         if self.config.favourites_file:
             self.favourites = self.load_favourites(self.config.favourites_file)
-            logger.info(f"Favourites loaded: {self.favourites}")
 
         logger.info(f"📡 Monitoring {self.config.radius_km}km radius around {self.config.postcode}")
         
@@ -240,8 +239,8 @@ if __name__ == "__main__":
     parser.add_argument('postcode', type=str, help='Postcode to monitor (required)')
     parser.add_argument('-r', '--radius', type=float, default=15,
                       help='Radius in kilometers to monitor (default: 15)')
-    parser.add_argument('-f', '--favourites', type=str,
-                      help='File path with favourite callsigns or ICAO identifiers (optional)')
+    parser.add_argument('-f', '--favourites', type=str, default='./favourites.txt',
+                      help='File path with favourite callsigns or ICAO identifiers (default: ./favourites.txt)')
     
     args = parser.parse_args()
     
