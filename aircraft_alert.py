@@ -113,12 +113,15 @@ class Aircraft:
         )
 
     def is_military(self) -> bool:
-        military_prefixes = ('43', 'AE') # ('0D', '0E', '0F', '30', '34', '39', '3F', '43', '480', '4B', 'AE', 'ADF', 'C0')
+        military_prefixes = ('43', 'AE')  # ('0D', '0E', '0F', '30', '34', '39', '3F', '43', '480', '4B', 'AE', 'ADF', 'C0')
         military_callsigns = ('MIL', 'NOW', "ARR", "RRR", "RAF", "NATO", "AAC", "NAF", "PLF", "TTN", "XXXX", "00000000")
         
+        icao_upper = self.icao24.upper()
+        callsign_upper = self.callsign.upper() if self.callsign else ""
+        
         return (
-            self.icao24.upper().startswith(military_prefixes) or
-            self.callsign.startswith(military_callsigns) or
+            any(icao_upper.startswith(prefix.upper()) for prefix in military_prefixes) or
+            any(callsign_upper.startswith(sign.upper()) for sign in military_callsigns) or
             (self.type_code and self.type_code.startswith('19'))
         )
 
@@ -138,10 +141,11 @@ class AircraftMonitor:
             return set()
 
     def is_favourite(self, aircraft: Aircraft) -> bool:
-        # Check if aircraft ICAO or callsign is in favourites
-        return (aircraft.icao24.upper() in self.favourites or
-                (aircraft.callsign.strip().upper() if aircraft.callsign else "") in self.favourites)
-        
+        # Convert to uppercase for case-insensitive comparison
+        icao = aircraft.icao24.upper()
+        callsign = aircraft.callsign.strip().upper() if aircraft.callsign else ""
+        return icao in self.favourites or callsign in self.favourites
+
     def calculate_position(self, aircraft: Aircraft, center: Tuple[float, float]) -> Dict:
         distance = self._haversine_distance(center, (aircraft.longitude, aircraft.latitude))
         bearing = self._calculate_bearing(center, (aircraft.longitude, aircraft.latitude))
