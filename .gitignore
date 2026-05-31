@@ -196,7 +196,7 @@ cython_debug/
 # App Specific Files
 aircraft.log
 favourites.txt
-./cache
-./logs
+cache/
+logs/
 *.csv
 desktop.ini
