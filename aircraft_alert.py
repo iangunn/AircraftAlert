@@ -86,9 +86,9 @@ KM_TO_NM = 0.539957  # kilometres → nautical miles
 TRACKING_URL = "https://adsb.lol/"
 
 # ---------------------------------------------------------------------------
-# Type code exclusion list
+# Type code exclusion and inclusion lists
 # ---------------------------------------------------------------------------
-# Comma-separated ICAO type codes to suppress alerts for.
+# Comma-separated ICAO type codes
 # Set in .env as: EXCLUDE_TYPE_CODES=ULAC,P28A,C172
 # Ref: https://www.icao.int/publications/doc8643/pages/search.aspx
 _raw_exclusions = os.getenv('EXCLUDE_TYPE_CODES', '')
@@ -98,6 +98,12 @@ EXCLUDE_TYPE_CODES: set = {
     if code.strip()
 }
 
+_raw_inclusions = os.getenv('INCLUDE_TYPE_CODES', '')
+INCLUDE_TYPE_CODES: set = {
+    code.strip().upper()
+    for code in _raw_inclusions.split(',')
+    if code.strip()
+}
 
 # ---------------------------------------------------------------------------
 # Feeder definitions
@@ -434,12 +440,15 @@ class AircraftMonitor:
             self.favourites = self.load_favourites(self.config.favourites_file)
 
         enabled_feeders = [f['name'] for f in FEEDERS if f['enabled']]
-        logger.info(
-            f"📡 Monitoring {self.config.radius_km}km radius around {self.config.postcode} "
-            f"— sources: {', '.join(enabled_feeders)}"
-        )
+        logger.info(f"📡 Monitoring {self.config.radius_km}km radius around {self.config.postcode}")
+        logger.info(f"ℹ️ Sources: {', '.join(enabled_feeders)}")
+
+        if INCLUDE_TYPE_CODES:
+            logger.info(f"✅ Including type codes: {', '.join(sorted(INCLUDE_TYPE_CODES))}")
         if EXCLUDE_TYPE_CODES:
             logger.info(f"🚫 Excluding type codes: {', '.join(sorted(EXCLUDE_TYPE_CODES))}")
+
+        logger.info(f"⭐ Included {len(self.favourites)} favourites")
 
         while True:
             aircraft_data = self.api.get_aircraft_data(center_coords, self.config.radius_km)
@@ -453,7 +462,9 @@ class AircraftMonitor:
 
                 position = self.calculate_position(aircraft, center_coords)
                 if position['distance'] <= self.config.radius_km and (
-                    aircraft.is_military() or self.is_favourite(aircraft)
+                    aircraft.is_military() or
+                    self.is_favourite(aircraft) or
+                    aircraft.type_code.upper() in INCLUDE_TYPE_CODES
                 ):
                     current_alert_icaos.add(aircraft.icao24)
 
@@ -468,9 +479,9 @@ class AircraftMonitor:
                         gs    = f"{int(aircraft.gs)}kts"      if aircraft.gs is not None else '?'
                         track = f"{int(aircraft.track)}°"     if aircraft.track is not None else '?'
                         message = (
-                            f"🕧 {current_time}\n"
                             f"✈️ {aircraft_type} | {aircraft.registration or aircraft.callsign or '?'}\n"
-                            f"🧭 {position['distance']:.1f}km {position['cardinal']} | {alt}\n"
+                            f"🧭 {position['cardinal']} | {alt}\n"
+                            f"🕧 {current_time}\n"
                             f"🔗 {TRACKING_URL}?icao={aircraft.icao24}"
                         )
                         logger.info("\n" + message + "\n")
