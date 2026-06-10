@@ -86,24 +86,27 @@ KM_TO_NM = 0.539957  # kilometres → nautical miles
 TRACKING_URL = "https://adsb.lol/"
 
 # ---------------------------------------------------------------------------
-# Type code exclusion and inclusion lists
+# Type code filter lists
 # ---------------------------------------------------------------------------
-# Comma-separated ICAO type codes
-# Set in .env as: EXCLUDE_TYPE_CODES=ULAC,P28A,C172
+# EXCLUDE: suppress alerts for these ICAO type codes even if military/favourite.
+# INCLUDE: always alert for these ICAO type codes regardless of military status.
+# Set in .env as comma-separated values, e.g.:
+#   EXCLUDE_TYPE_CODES=ULAC,P28A,C172
+#   INCLUDE_TYPE_CODES=SPIT,HURI,P51,T6
 # Ref: https://www.icao.int/publications/doc8643/pages/search.aspx
-_raw_exclusions = os.getenv('EXCLUDE_TYPE_CODES', '')
+
 EXCLUDE_TYPE_CODES: set = {
     code.strip().upper()
-    for code in _raw_exclusions.split(',')
+    for code in os.getenv('EXCLUDE_TYPE_CODES', '').split(',')
     if code.strip()
 }
 
-_raw_inclusions = os.getenv('INCLUDE_TYPE_CODES', '')
 INCLUDE_TYPE_CODES: set = {
     code.strip().upper()
-    for code in _raw_inclusions.split(',')
+    for code in os.getenv('INCLUDE_TYPE_CODES', '').split(',')
     if code.strip()
 }
+
 
 # ---------------------------------------------------------------------------
 # Feeder definitions
@@ -117,8 +120,8 @@ INCLUDE_TYPE_CODES: set = {
 #   headers     – optional dict of extra HTTP headers (e.g. API keys)
 #
 # URL builder notes:
-#   adsb.lol  / adsb.fi   – distance in nautical miles  (radius_km * KM_TO_NM)
-#   airplanes.live        – distance in kilometres       (radius_km directly)
+#   adsb.lol / adsb.fi / adsb.one – distance in nautical miles (radius_km * KM_TO_NM)
+#   airplanes.live                – distance in kilometres      (radius_km directly)
 
 def _adsbexchange_v2_parser(data: dict) -> List[dict]:
     """Standard parser for any ADSBexchange-v2-compatible JSON response."""
@@ -128,6 +131,7 @@ FEEDERS: List[dict] = [
     {
         "name": "adsb.lol",
         "enabled": True,
+        # Ref: https://api.adsb.lol/docs
         "url_builder": lambda lat, lon, r: (
             f"https://api.adsb.lol/v2/lat/{lat}/lon/{lon}/dist/{r * KM_TO_NM:.1f}"
         ),
@@ -137,6 +141,7 @@ FEEDERS: List[dict] = [
     {
         "name": "adsb.fi",
         "enabled": True,
+        # Ref: https://github.com/adsbfi/opendata
         "url_builder": lambda lat, lon, r: (
             f"https://opendata.adsb.fi/api/v3/lat/{lat}/lon/{lon}/dist/{r * KM_TO_NM:.1f}"
         ),
@@ -146,10 +151,20 @@ FEEDERS: List[dict] = [
     {
         "name": "airplanes.live",
         "enabled": True,
-        # airplanes.live uses /point/<lat>/<lon>/<radius_km> — distance in km
         # Ref: https://airplanes.live/api-guide/
+        # Uses kilometres, not nautical miles
         "url_builder": lambda lat, lon, r: (
             f"https://api.airplanes.live/v2/point/{lat}/{lon}/{r:.1f}"
+        ),
+        "parser": _adsbexchange_v2_parser,
+        "headers": {},
+    },
+    {
+        "name": "adsb.one",
+        "enabled": False,
+        # Ref: https://api.adsb.one  — ADSBExchange v2 compatible, radius in nautical miles
+        "url_builder": lambda lat, lon, r: (
+            f"https://api.adsb.one/v2/point/{lat}/{lon}/{r * KM_TO_NM:.1f}"
         ),
         "parser": _adsbexchange_v2_parser,
         "headers": {},
@@ -187,8 +202,8 @@ class Aircraft:
     @classmethod
     def from_adsbv2_data(cls, data: Dict) -> 'Aircraft':
         """
-        ADSBexchange v2 compatible response (adsb.lol / adsb.fi / airplanes.live).
-        Ref: https://api.adsb.lol/docs  /  https://github.com/airplanes-live/api
+        ADSBexchange v2 compatible response (adsb.lol / adsb.fi / airplanes.live / adsb.one).
+        Ref: https://api.adsb.lol/docs  /  https://github.com/airplanes-live/api-archive
         dbFlags bit 0 = military
         r = registration
         t = ICAO type code (prefix '19' = military category)
@@ -438,17 +453,17 @@ class AircraftMonitor:
 
         if self.config.favourites_file:
             self.favourites = self.load_favourites(self.config.favourites_file)
+            logger.info(f"⭐ Monitoring {len(self.favourites)} favourites")
 
         enabled_feeders = [f['name'] for f in FEEDERS if f['enabled']]
-        logger.info(f"📡 Monitoring {self.config.radius_km}km radius around {self.config.postcode}")
-        logger.info(f"ℹ️ Sources: {', '.join(enabled_feeders)}")
-
-        if INCLUDE_TYPE_CODES:
-            logger.info(f"✅ Including type codes: {', '.join(sorted(INCLUDE_TYPE_CODES))}")
+        logger.info(
+            f"📡 Monitoring {self.config.radius_km}km radius around {self.config.postcode} "
+            f"— sources: {', '.join(enabled_feeders)}"
+        )
         if EXCLUDE_TYPE_CODES:
             logger.info(f"🚫 Excluding type codes: {', '.join(sorted(EXCLUDE_TYPE_CODES))}")
-
-        logger.info(f"⭐ Included {len(self.favourites)} favourites")
+        if INCLUDE_TYPE_CODES:
+            logger.info(f"✅ Including type codes: {', '.join(sorted(INCLUDE_TYPE_CODES))}")
 
         while True:
             aircraft_data = self.api.get_aircraft_data(center_coords, self.config.radius_km)
@@ -456,7 +471,7 @@ class AircraftMonitor:
             current_time = time.strftime("%Y-%m-%d %H:%M:%S")
 
             for aircraft in aircraft_data:
-                # Skip excluded type codes
+                # Skip excluded type codes (exclusion takes priority over everything)
                 if aircraft.type_code.upper() in EXCLUDE_TYPE_CODES:
                     continue
 
@@ -479,9 +494,9 @@ class AircraftMonitor:
                         gs    = f"{int(aircraft.gs)}kts"      if aircraft.gs is not None else '?'
                         track = f"{int(aircraft.track)}°"     if aircraft.track is not None else '?'
                         message = (
-                            f"✈️ {aircraft_type} | {aircraft.registration or aircraft.callsign or '?'}\n"
-                            f"🧭 {position['cardinal']} | {alt}\n"
                             f"🕧 {current_time}\n"
+                            f"✈️ {aircraft_type} | {aircraft.registration or aircraft.callsign or '?'}\n"
+                            f"🧭 {position['distance']:.1f}km {position['cardinal']} | {alt}\n"
                             f"🔗 {TRACKING_URL}?icao={aircraft.icao24}"
                         )
                         logger.info("\n" + message + "\n")
