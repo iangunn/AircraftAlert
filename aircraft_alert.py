@@ -83,7 +83,7 @@ KM_TO_NM = 0.539957  # kilometres → nautical miles
 #   https://globe.adsbexchange.com/
 #   https://globe.adsb.fi/
 #   https://adsb.lol/
-TRACKING_URL = "https://adsb.lol/"
+TRACKING_URL = os.getenv('TRACKING_URL', 'https://adsb.lol/')
 
 # ---------------------------------------------------------------------------
 # Type code filter lists
@@ -130,7 +130,7 @@ def _adsbexchange_v2_parser(data: dict) -> List[dict]:
 FEEDERS: List[dict] = [
     {
         "name": "adsb.lol",
-        "enabled": True,
+        "enabled": False,
         # Ref: https://api.adsb.lol/docs
         "url_builder": lambda lat, lon, r: (
             f"https://api.adsb.lol/v2/lat/{lat}/lon/{lon}/dist/{r * KM_TO_NM:.1f}"
