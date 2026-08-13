@@ -130,7 +130,7 @@ def _adsbexchange_v2_parser(data: dict) -> List[dict]:
 FEEDERS: List[dict] = [
     {
         "name": "adsb.lol",
-        "enabled": False,
+        "enabled": True,
         # Ref: https://api.adsb.lol/docs
         "url_builder": lambda lat, lon, r: (
             f"https://api.adsb.lol/v2/lat/{lat}/lon/{lon}/dist/{r * KM_TO_NM:.1f}"
@@ -150,7 +150,7 @@ FEEDERS: List[dict] = [
     },
     {
         "name": "airplanes.live",
-        "enabled": True,
+        "enabled": False,
         # Ref: https://airplanes.live/api-guide/
         # Uses kilometres, not nautical miles
         "url_builder": lambda lat, lon, r: (
@@ -494,9 +494,9 @@ class AircraftMonitor:
                         gs    = f"{int(aircraft.gs)}kts"      if aircraft.gs is not None else '?'
                         track = f"{int(aircraft.track)}°"     if aircraft.track is not None else '?'
                         message = (
-                            f"🕧 {current_time}\n"
                             f"✈️ {aircraft_type} | {aircraft.registration or aircraft.callsign or '?'}\n"
                             f"🧭 {position['distance']:.1f}km {position['cardinal']} | {alt}\n"
+                            f"🕧 {current_time}\n"
                             f"🔗 {TRACKING_URL}?icao={aircraft.icao24}"
                         )
                         logger.info("\n" + message + "\n")
