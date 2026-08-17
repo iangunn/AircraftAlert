@@ -78,12 +78,25 @@ _init_csv()
 # ---------------------------------------------------------------------------
 KM_TO_NM = 0.539957  # kilometres → nautical miles
 
-# Tracking website used in alert links — change to preferred viewer
+# Tracking website used in alert links — change to preferred viewer via .env
 # Options:
 #   https://globe.adsbexchange.com/
 #   https://globe.adsb.fi/
 #   https://adsb.lol/
 TRACKING_URL = os.getenv('TRACKING_URL', 'https://adsb.lol/')
+
+# ---------------------------------------------------------------------------
+# Backoff settings
+# ---------------------------------------------------------------------------
+# On failure, a feeder is skipped until its backoff period expires.
+# Backoff doubles on each consecutive failure, capped at BACKOFF_MAX_SECONDS.
+# 403 responses start at a higher initial backoff (rate limiting signal).
+# After BACKOFF_ERROR_THRESHOLD consecutive failures, log level drops to WARNING
+# to avoid flooding the log — a single recovery INFO is logged on success.
+BACKOFF_BASE_SECONDS    = 30    # initial backoff (same as poll interval)
+BACKOFF_403_SECONDS     = 120   # initial backoff for 403 specifically
+BACKOFF_MAX_SECONDS     = 600   # cap at 10 minutes
+BACKOFF_ERROR_THRESHOLD = 3     # failures before downgrading to WARNING
 
 # ---------------------------------------------------------------------------
 # Type code filter lists
@@ -153,6 +166,7 @@ FEEDERS: List[dict] = [
         "enabled": False,
         # Ref: https://airplanes.live/api-guide/
         # Uses kilometres, not nautical miles
+        # Paid service?
         "url_builder": lambda lat, lon, r: (
             f"https://api.airplanes.live/v2/point/{lat}/{lon}/{r:.1f}"
         ),
@@ -280,6 +294,46 @@ class ApiClient:
         pushover_url = f"pover://{os.getenv('PUSHOVER_USER')}@{os.getenv('PUSHOVER_TOKEN')}"
         self.apobj.add(pushover_url)
 
+        # Per-feeder backoff state: name → {failures, backoff_until}
+        self._feeder_state: Dict[str, Dict] = {
+            f['name']: {'failures': 0, 'backoff_until': 0.0}
+            for f in FEEDERS
+        }
+
+    def _record_feeder_success(self, name: str):
+        state = self._feeder_state[name]
+        if state['failures'] > 0:
+            logger.info(f"✅ {name} recovered after {state['failures']} failure(s)")
+        state['failures']     = 0
+        state['backoff_until'] = 0.0
+
+    def _record_feeder_failure(self, name: str, status_code: Optional[int] = None):
+        state = self._feeder_state[name]
+        state['failures'] += 1
+        failures = state['failures']
+
+        # 403 starts at a higher base (rate limiting); everything else uses standard base
+        base    = BACKOFF_403_SECONDS if status_code == 403 else BACKOFF_BASE_SECONDS
+        backoff = min(base * (2 ** (failures - 1)), BACKOFF_MAX_SECONDS)
+        state['backoff_until'] = time.time() + backoff
+
+        # Only log at ERROR for first N failures; after that downgrade to WARNING
+        # to avoid flooding the log during a prolonged outage
+        log_fn = logger.error if failures <= BACKOFF_ERROR_THRESHOLD else logger.warning
+        reason = f"HTTP {status_code}" if status_code else "connection error"
+        log_fn(
+            f"⚠️  {name} {reason} (failure #{failures}) — "
+            f"backing off for {backoff:.0f}s"
+        )
+
+    def _feeder_is_backed_off(self, name: str) -> bool:
+        state = self._feeder_state[name]
+        if time.time() < state['backoff_until']:
+            remaining = state['backoff_until'] - time.time()
+            logger.debug(f"{name} in backoff — {remaining:.0f}s remaining, skipping")
+            return True
+        return False
+
     def get_postcode_location(self, postcode: str) -> Optional[Tuple[float, float]]:
         try:
             response = requests.get(
@@ -302,6 +356,11 @@ class ApiClient:
         radius_km: float
     ) -> List[Aircraft]:
         """Generic fetcher for any ADSBexchange-v2-compatible feeder."""
+        name = feeder['name']
+
+        if self._feeder_is_backed_off(name):
+            return []
+
         url = feeder['url_builder'](lat, lon, radius_km)
         try:
             response = requests.get(
@@ -310,16 +369,19 @@ class ApiClient:
                 timeout=15
             )
             if response.status_code != 200:
-                logger.error(f"{feeder['name']} API error: {response.status_code}")
+                self._record_feeder_failure(name, status_code=response.status_code)
                 return []
+
             ac_list = feeder['parser'](response.json())
+            self._record_feeder_success(name)
             return [
                 Aircraft.from_adsbv2_data(ac)
                 for ac in ac_list
                 if ac.get('lat') is not None and ac.get('lon') is not None
             ]
         except Exception as e:
-            logger.error(f"{feeder['name']} fetch error: {e}")
+            self._record_feeder_failure(name)
+            logger.debug(f"{name} fetch error detail: {e}")
             return []
 
     def get_aircraft_data(
@@ -329,6 +391,7 @@ class ApiClient:
     ) -> List[Aircraft]:
         """
         Query all enabled feeders concurrently.
+        Feeders in backoff are skipped for this poll.
         Deduplicate by icao24 — last writer wins among feeders.
         """
         lon, lat = center
@@ -347,7 +410,8 @@ class ApiClient:
                     aircraft_list = future.result()
                     for ac in aircraft_list:
                         results[ac.icao24.lower()] = ac
-                    logger.debug(f"{source}: {len(aircraft_list)} received")
+                    if aircraft_list:
+                        logger.debug(f"{source}: {len(aircraft_list)} received")
                 except Exception as e:
                     logger.error(f"Error processing {source} results: {e}")
 
@@ -536,3 +600,4 @@ if __name__ == "__main__":
         monitor.run()
     except KeyboardInterrupt:
         logger.info("🛑 Monitoring stopped by user (CTRL-C)")
+        
