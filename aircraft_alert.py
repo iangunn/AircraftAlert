@@ -46,11 +46,13 @@ csv_log_path = os.path.join(log_directory, 'alerts.csv')
 CSV_FIELDS = ['date', 'time', 'icao24', 'registration', 'callsign', 'type_code',
               'lat', 'lon', 'alt_baro', 'gs', 'track', 'military']
 
+
 def _init_csv():
     """Create CSV with header row if it doesn't already exist."""
     if not os.path.exists(csv_log_path):
         with open(csv_log_path, 'w', newline='', encoding='utf-8') as f:
             csv.DictWriter(f, fieldnames=CSV_FIELDS).writeheader()
+
 
 def log_alert_csv(aircraft: 'Aircraft'):
     """Append one alert row to the CSV log."""
@@ -70,6 +72,7 @@ def log_alert_csv(aircraft: 'Aircraft'):
             'track':        aircraft.track if aircraft.track is not None else '',
             'military':     bool(aircraft.db_flags & 1),
         })
+
 
 _init_csv()
 
@@ -101,7 +104,8 @@ BACKOFF_ERROR_THRESHOLD = 3     # failures before downgrading to WARNING
 # ---------------------------------------------------------------------------
 # Type code filter lists
 # ---------------------------------------------------------------------------
-# EXCLUDE: suppress alerts for these ICAO type codes even if military/favourite.
+# EXCLUDE: suppress alerts for these ICAO type codes.
+#          Favourites always override EXCLUDE — a favourite is never suppressed.
 # INCLUDE: always alert for these ICAO type codes regardless of military status.
 # Set in .env as comma-separated values, e.g.:
 #   EXCLUDE_TYPE_CODES=ULAC,P28A,C172
@@ -140,6 +144,7 @@ def _adsbexchange_v2_parser(data: dict) -> List[dict]:
     """Standard parser for any ADSBexchange-v2-compatible JSON response."""
     return data.get('ac', []) or []
 
+
 FEEDERS: List[dict] = [
     {
         "name": "adsb.lol",
@@ -166,7 +171,6 @@ FEEDERS: List[dict] = [
         "enabled": False,
         # Ref: https://airplanes.live/api-guide/
         # Uses kilometres, not nautical miles
-        # Paid service?
         "url_builder": lambda lat, lon, r: (
             f"https://api.airplanes.live/v2/point/{lat}/{lon}/{r:.1f}"
         ),
@@ -256,6 +260,7 @@ class Aircraft:
 # Ref: https://hexdb.io/#api-body
 _hexdb_cache: Dict[str, Optional[str]] = {}
 
+
 def lookup_aircraft_type(icao24: str) -> Optional[str]:
     """
     Look up full aircraft type name from hexdb.io.
@@ -304,7 +309,7 @@ class ApiClient:
         state = self._feeder_state[name]
         if state['failures'] > 0:
             logger.info(f"✅ {name} recovered after {state['failures']} failure(s)")
-        state['failures']     = 0
+        state['failures']      = 0
         state['backoff_until'] = 0.0
 
     def _record_feeder_failure(self, name: str, status_code: Optional[int] = None):
@@ -535,8 +540,8 @@ class AircraftMonitor:
             current_time = time.strftime("%Y-%m-%d %H:%M:%S")
 
             for aircraft in aircraft_data:
-                # Skip excluded type codes (exclusion takes priority over everything)
-                if aircraft.type_code.upper() in EXCLUDE_TYPE_CODES:
+                # Favourites always win — never suppress a favourite even if type code is excluded
+                if aircraft.type_code.upper() in EXCLUDE_TYPE_CODES and not self.is_favourite(aircraft):
                     continue
 
                 position = self.calculate_position(aircraft, center_coords)
@@ -600,4 +605,3 @@ if __name__ == "__main__":
         monitor.run()
     except KeyboardInterrupt:
         logger.info("🛑 Monitoring stopped by user (CTRL-C)")
-        
