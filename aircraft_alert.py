@@ -168,7 +168,7 @@ FEEDERS: List[dict] = [
     },
     {
         "name": "airplanes.live",
-        "enabled": False,
+        "enabled": True,
         # Ref: https://airplanes.live/api-guide/
         # Uses kilometres, not nautical miles
         "url_builder": lambda lat, lon, r: (
@@ -436,10 +436,11 @@ class ApiClient:
 # ---------------------------------------------------------------------------
 class AircraftMonitor:
     def __init__(self, config: Config):
-        self.config = config
-        self.api    = ApiClient()
-        self.active_aircraft = set()
-        self.favourites      = set()
+        self.config           = config
+        self.api              = ApiClient()
+        self.active_aircraft  = set()
+        self.favourites       = set()
+        self._favourites_mtime = 0.0  # tracks last loaded mtime for hot-reload
 
     def load_favourites(self, filepath: str) -> set:
         try:
@@ -452,6 +453,20 @@ class AircraftMonitor:
         except Exception as e:
             logger.error(f"Error loading favourites from {filepath}: {e}")
             return set()
+
+    def _reload_favourites_if_changed(self):
+        """Reload favourites file if it has been modified since last load."""
+        if not self.config.favourites_file:
+            return
+        try:
+            mtime = os.path.getmtime(self.config.favourites_file)
+            if mtime != self._favourites_mtime:
+                self.favourites        = self.load_favourites(self.config.favourites_file)
+                self._favourites_mtime = mtime
+                logger.info(f"⭐ Favourites reloaded — {len(self.favourites)} monitored")
+        except OSError:
+            # File temporarily unavailable (e.g. mid-save) — try again next poll
+            pass
 
     def is_favourite(self, aircraft: Aircraft) -> bool:
         icao     = aircraft.icao24.upper()
@@ -520,9 +535,8 @@ class AircraftMonitor:
             logger.error(f"Could not find coordinates for {self.config.postcode}")
             return
 
-        if self.config.favourites_file:
-            self.favourites = self.load_favourites(self.config.favourites_file)
-            logger.info(f"⭐ Monitoring {len(self.favourites)} favourites")
+        # Initial favourites load
+        self._reload_favourites_if_changed()
 
         enabled_feeders = [f['name'] for f in FEEDERS if f['enabled']]
         logger.info(
@@ -535,6 +549,9 @@ class AircraftMonitor:
             logger.info(f"✅ Including type codes: {', '.join(sorted(INCLUDE_TYPE_CODES))}")
 
         while True:
+            # Hot-reload favourites if the file has changed
+            self._reload_favourites_if_changed()
+
             aircraft_data = self.api.get_aircraft_data(center_coords, self.config.radius_km)
             current_alert_icaos = set()
             current_time = time.strftime("%Y-%m-%d %H:%M:%S")
