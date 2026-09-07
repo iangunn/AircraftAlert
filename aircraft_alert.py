@@ -21,7 +21,7 @@ load_dotenv()
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
-log_directory = 'logs'
+log_directory = os.getenv('LOG_DIR', 'logs')
 os.makedirs(log_directory, exist_ok=True)
 log_file_path = os.path.join(log_directory, 'aircraft.log')
 
@@ -76,22 +76,38 @@ def log_alert_csv(aircraft: 'Aircraft'):
 
 _init_csv()
 
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+def _env_bool(key: str, default: bool = True) -> bool:
+    """
+    Read a boolean from an environment variable.
+    Accepts: true/false, yes/no, 1/0 (case-insensitive).
+    Falls back to default if the key is not set.
+    """
+    val = os.getenv(key)
+    if val is None:
+        return default
+    return val.strip().lower() in ('true', 'yes', '1')
+
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 KM_TO_NM = 0.539957  # kilometres → nautical miles
 
-# Tracking website used in alert links — change to preferred viewer via .env
+# Tracking website used in alert links — set TRACKING_URL in .env
 # Options:
 #   https://globe.adsbexchange.com/
 #   https://globe.adsb.fi/
 #   https://adsb.lol/
-TRACKING_URL = os.getenv('TRACKING_URL', 'https://adsb.lol/')
+TRACKING_URL = os.getenv('TRACKING_URL', 'https://globe.adsb.fi/')
 
 # ---------------------------------------------------------------------------
 # Backoff settings
 # ---------------------------------------------------------------------------
-# On failure, a feeder is skipped until its backoff period expires.
+# On failure, an aggregator is skipped until its backoff period expires.
 # Backoff doubles on each consecutive failure, capped at BACKOFF_MAX_SECONDS.
 # 403 responses start at a higher initial backoff (rate limiting signal).
 # After BACKOFF_ERROR_THRESHOLD consecutive failures, log level drops to WARNING
@@ -126,15 +142,14 @@ INCLUDE_TYPE_CODES: set = {
 
 
 # ---------------------------------------------------------------------------
-# Feeder definitions
+# Aggregator definitions
 # ---------------------------------------------------------------------------
-# Each entry describes one ADS-B data source.
-# Fields:
-#   name        – human-readable label used in log messages
-#   enabled     – set False to skip this source entirely
-#   url_builder – callable(lat, lon, radius_km) → str  (builds the request URL)
-#   parser      – callable(response_json) → List[dict] (extracts the ac list)
-#   headers     – optional dict of extra HTTP headers (e.g. API keys)
+# Each aggregator has a corresponding AGGREGATOR_<NAME>_ENABLED env var.
+# Set to false in .env to disable without touching the source code, e.g.:
+#   AGGREGATOR_ADSBLOL_ENABLED=false
+#   AGGREGATOR_ADSBFI_ENABLED=true
+#   AGGREGATOR_AIRPLANESLIVE_ENABLED=false
+#   AGGREGATOR_ADSBONE_ENABLED=false
 #
 # URL builder notes:
 #   adsb.lol / adsb.fi / adsb.one – distance in nautical miles (radius_km * KM_TO_NM)
@@ -145,46 +160,50 @@ def _adsbexchange_v2_parser(data: dict) -> List[dict]:
     return data.get('ac', []) or []
 
 
-FEEDERS: List[dict] = [
+AGGREGATORS: List[dict] = [
     {
-        "name": "adsb.lol",
-        "enabled": True,
-        # Ref: https://api.adsb.lol/docs
-        "url_builder": lambda lat, lon, r: (
-            f"https://api.adsb.lol/v2/lat/{lat}/lon/{lon}/dist/{r * KM_TO_NM:.1f}"
-        ),
-        "parser": _adsbexchange_v2_parser,
-        "headers": {},
-    },
-    {
-        "name": "adsb.fi",
-        "enabled": True,
+        "name":    "adsb.fi",
+        "env_key": "AGGREGATOR_ADSBFI_ENABLED",
+        "enabled": _env_bool("AGGREGATOR_ADSBFI_ENABLED", default=True),
         # Ref: https://github.com/adsbfi/opendata
         "url_builder": lambda lat, lon, r: (
             f"https://opendata.adsb.fi/api/v3/lat/{lat}/lon/{lon}/dist/{r * KM_TO_NM:.1f}"
         ),
-        "parser": _adsbexchange_v2_parser,
+        "parser":  _adsbexchange_v2_parser,
         "headers": {},
     },
     {
-        "name": "airplanes.live",
-        "enabled": True,
+        "name":    "adsb.lol",
+        "env_key": "AGGREGATOR_ADSBLOL_ENABLED",
+        "enabled": _env_bool("AGGREGATOR_ADSBLOL_ENABLED", default=False),
+        # Ref: https://api.adsb.lol/docs
+        "url_builder": lambda lat, lon, r: (
+            f"https://api.adsb.lol/v2/lat/{lat}/lon/{lon}/dist/{r * KM_TO_NM:.1f}"
+        ),
+        "parser":  _adsbexchange_v2_parser,
+        "headers": {},
+    },
+    {
+        "name":    "adsb.one",
+        "env_key": "AGGREGATOR_ADSBONE_ENABLED",
+        "enabled": _env_bool("AGGREGATOR_ADSBONE_ENABLED", default=False),
+        # Ref: https://api.adsb.one  — ADSBExchange v2 compatible, radius in nautical miles
+        "url_builder": lambda lat, lon, r: (
+            f"https://api.adsb.one/v2/point/{lat}/{lon}/{r * KM_TO_NM:.1f}"
+        ),
+        "parser":  _adsbexchange_v2_parser,
+        "headers": {},
+    },
+    {
+        "name":    "airplanes.live",
+        "env_key": "AGGREGATOR_AIRPLANESLIVE_ENABLED",
+        "enabled": _env_bool("AGGREGATOR_AIRPLANESLIVE_ENABLED", default=False),
         # Ref: https://airplanes.live/api-guide/
         # Uses kilometres, not nautical miles
         "url_builder": lambda lat, lon, r: (
             f"https://api.airplanes.live/v2/point/{lat}/{lon}/{r:.1f}"
         ),
-        "parser": _adsbexchange_v2_parser,
-        "headers": {},
-    },
-    {
-        "name": "adsb.one",
-        "enabled": False,
-        # Ref: https://api.adsb.one  — ADSBExchange v2 compatible, radius in nautical miles
-        "url_builder": lambda lat, lon, r: (
-            f"https://api.adsb.one/v2/point/{lat}/{lon}/{r * KM_TO_NM:.1f}"
-        ),
-        "parser": _adsbexchange_v2_parser,
+        "parser":  _adsbexchange_v2_parser,
         "headers": {},
     },
 ]
@@ -242,7 +261,7 @@ class Aircraft:
 
     def is_military(self) -> bool:
         """
-        dbFlags bit 0 is the authoritative military flag set by the feeder network database.
+        dbFlags bit 0 is the authoritative military flag set by the aggregator network database.
         type_code prefix '19' catches ICAO category A military aircraft not yet in the database.
         Ref: https://www.adsbexchange.com/version-2-api-wip/
         """
@@ -295,25 +314,34 @@ def lookup_aircraft_type(icao24: str) -> Optional[str]:
 # ---------------------------------------------------------------------------
 class ApiClient:
     def __init__(self):
+        # Apprise notification service
+        # APPRISE_URLS accepts one or more Apprise-compatible URLs, comma-separated.
+        # Ref: https://github.com/caronc/apprise/wiki
         self.apobj = apprise.Apprise()
-        pushover_url = f"pover://{os.getenv('PUSHOVER_USER')}@{os.getenv('PUSHOVER_TOKEN')}"
-        self.apobj.add(pushover_url)
+        apprise_urls = os.getenv('APPRISE_URLS', '')
+        if apprise_urls:
+            for url in apprise_urls.split(','):
+                url = url.strip()
+                if url:
+                    self.apobj.add(url)
+        else:
+            logger.warning("No APPRISE_URLS set — notifications disabled")
 
-        # Per-feeder backoff state: name → {failures, backoff_until}
-        self._feeder_state: Dict[str, Dict] = {
-            f['name']: {'failures': 0, 'backoff_until': 0.0}
-            for f in FEEDERS
+        # Per-aggregator backoff state: name → {failures, backoff_until}
+        self._aggregator_state: Dict[str, Dict] = {
+            a['name']: {'failures': 0, 'backoff_until': 0.0}
+            for a in AGGREGATORS
         }
 
-    def _record_feeder_success(self, name: str):
-        state = self._feeder_state[name]
+    def _record_aggregator_success(self, name: str):
+        state = self._aggregator_state[name]
         if state['failures'] > 0:
             logger.info(f"✅ {name} recovered after {state['failures']} failure(s)")
         state['failures']      = 0
         state['backoff_until'] = 0.0
 
-    def _record_feeder_failure(self, name: str, status_code: Optional[int] = None):
-        state = self._feeder_state[name]
+    def _record_aggregator_failure(self, name: str, status_code: Optional[int] = None):
+        state = self._aggregator_state[name]
         state['failures'] += 1
         failures = state['failures']
 
@@ -331,8 +359,8 @@ class ApiClient:
             f"backing off for {backoff:.0f}s"
         )
 
-    def _feeder_is_backed_off(self, name: str) -> bool:
-        state = self._feeder_state[name]
+    def _aggregator_is_backed_off(self, name: str) -> bool:
+        state = self._aggregator_state[name]
         if time.time() < state['backoff_until']:
             remaining = state['backoff_until'] - time.time()
             logger.debug(f"{name} in backoff — {remaining:.0f}s remaining, skipping")
@@ -353,40 +381,40 @@ class ApiClient:
             logger.error(f"Postcode API error: {e}")
             return None
 
-    def get_feeder_data(
+    def get_aggregator_data(
         self,
-        feeder: dict,
+        aggregator: dict,
         lat: float,
         lon: float,
         radius_km: float
     ) -> List[Aircraft]:
-        """Generic fetcher for any ADSBexchange-v2-compatible feeder."""
-        name = feeder['name']
+        """Generic fetcher for any ADSBexchange-v2-compatible aggregator."""
+        name = aggregator['name']
 
-        if self._feeder_is_backed_off(name):
+        if self._aggregator_is_backed_off(name):
             return []
 
-        url = feeder['url_builder'](lat, lon, radius_km)
+        url = aggregator['url_builder'](lat, lon, radius_km)
         try:
             response = requests.get(
                 url,
-                headers=feeder.get('headers', {}),
+                headers=aggregator.get('headers', {}),
                 timeout=15
             )
             if response.status_code != 200:
-                self._record_feeder_failure(name, status_code=response.status_code)
+                self._record_aggregator_failure(name, status_code=response.status_code)
                 return []
 
-            ac_list = feeder['parser'](response.json())
-            self._record_feeder_success(name)
+            ac_list = aggregator['parser'](response.json())
+            self._record_aggregator_success(name)
             return [
                 Aircraft.from_adsbv2_data(ac)
                 for ac in ac_list
                 if ac.get('lat') is not None and ac.get('lon') is not None
             ]
         except Exception as e:
-            self._record_feeder_failure(name)
-            logger.debug(f"{name} fetch error detail: {e}")
+            self._record_aggregator_failure(name)
+            logger.debug(f"{name} error detail: {e}")
             return []
 
     def get_aircraft_data(
@@ -395,19 +423,19 @@ class ApiClient:
         radius_km: float
     ) -> List[Aircraft]:
         """
-        Query all enabled feeders concurrently.
-        Feeders in backoff are skipped for this poll.
-        Deduplicate by icao24 — last writer wins among feeders.
+        Query all enabled aggregators concurrently.
+        Aggregators in backoff are skipped for this poll.
+        Deduplicate by icao24 — last writer wins among aggregators.
         """
         lon, lat = center
         results: Dict[str, Aircraft] = {}
 
-        enabled = [f for f in FEEDERS if f['enabled']]
+        enabled = [a for a in AGGREGATORS if a['enabled']]
 
         with ThreadPoolExecutor(max_workers=len(enabled)) as executor:
             futures = {
-                executor.submit(self.get_feeder_data, f, lat, lon, radius_km): f['name']
-                for f in enabled
+                executor.submit(self.get_aggregator_data, a, lat, lon, radius_km): a['name']
+                for a in enabled
             }
             for future in as_completed(futures):
                 source = futures[future]
@@ -436,10 +464,10 @@ class ApiClient:
 # ---------------------------------------------------------------------------
 class AircraftMonitor:
     def __init__(self, config: Config):
-        self.config           = config
-        self.api              = ApiClient()
-        self.active_aircraft  = set()
-        self.favourites       = set()
+        self.config            = config
+        self.api               = ApiClient()
+        self.active_aircraft   = set()
+        self.favourites        = set()
         self._favourites_mtime = 0.0  # tracks last loaded mtime for hot-reload
 
     def load_favourites(self, filepath: str) -> set:
@@ -538,10 +566,10 @@ class AircraftMonitor:
         # Initial favourites load
         self._reload_favourites_if_changed()
 
-        enabled_feeders = [f['name'] for f in FEEDERS if f['enabled']]
+        enabled_aggregators = [a['name'] for a in AGGREGATORS if a['enabled']]
         logger.info(
             f"📡 Monitoring {self.config.radius_km}km radius around {self.config.postcode} "
-            f"— sources: {', '.join(enabled_feeders)}"
+            f"— aggregators: {', '.join(enabled_aggregators)}"
         )
         if EXCLUDE_TYPE_CODES:
             logger.info(f"🚫 Excluding type codes: {', '.join(sorted(EXCLUDE_TYPE_CODES))}")
