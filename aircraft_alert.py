@@ -43,7 +43,7 @@ logging.getLogger('apprise').setLevel(logging.WARNING)
 # CSV alert log
 # ---------------------------------------------------------------------------
 csv_log_path = os.path.join(log_directory, 'alerts.csv')
-CSV_FIELDS = ['date', 'time', 'icao24', 'registration', 'callsign', 'type_code',
+CSV_FIELDS = ['date', 'time', 'icao24', 'registration', 'callsign', 'type_code', 'aircraft_type',
               'lat', 'lon', 'alt_baro', 'gs', 'track', 'military']
 
 
@@ -59,18 +59,19 @@ def log_alert_csv(aircraft: 'Aircraft'):
     now = datetime.now()
     with open(csv_log_path, 'a', newline='', encoding='utf-8') as f:
         csv.DictWriter(f, fieldnames=CSV_FIELDS).writerow({
-            'date':         now.strftime('%Y-%m-%d'),
-            'time':         now.strftime('%H:%M:%S'),
-            'icao24':       aircraft.icao24,
-            'registration': aircraft.registration,
-            'callsign':     aircraft.callsign,
-            'type_code':    aircraft.type_code,
-            'lat':          aircraft.latitude,
-            'lon':          aircraft.longitude,
-            'alt_baro':     aircraft.alt_baro if aircraft.alt_baro is not None else '',
-            'gs':           aircraft.gs if aircraft.gs is not None else '',
-            'track':        aircraft.track if aircraft.track is not None else '',
-            'military':     bool(aircraft.db_flags & 1),
+            'date':          now.strftime('%Y-%m-%d'),
+            'time':          now.strftime('%H:%M:%S'),
+            'icao24':        aircraft.icao24,
+            'registration':  aircraft.registration,
+            'callsign':      aircraft.callsign,
+            'type_code':     aircraft.type_code,
+            'aircraft_type': lookup_aircraft_type(aircraft.icao24) or '',
+            'lat':           aircraft.latitude,
+            'lon':           aircraft.longitude,
+            'alt_baro':      aircraft.alt_baro if aircraft.alt_baro is not None else '',
+            'gs':            aircraft.gs if aircraft.gs is not None else '',
+            'track':         aircraft.track if aircraft.track is not None else '',
+            'military':      bool(aircraft.db_flags & 1),
         })
 
 
