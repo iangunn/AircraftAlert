@@ -633,13 +633,20 @@ class AircraftMonitor:
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Monitor military aircraft in your area')
-    parser.add_argument('postcode', type=str, help='Postcode to monitor (required)')
-    parser.add_argument('-r', '--radius', type=float, default=15,
-                        help='Radius in kilometers to monitor (default: 15)')
-    parser.add_argument('-f', '--favourites', type=str, default='./favourites.txt',
+    default_postcode = os.getenv('POSTCODE')
+    parser.add_argument('postcode', type=str, nargs='?', default=default_postcode,
+                        help='Postcode to monitor (or set POSTCODE)')
+    default_radius = os.getenv('RADIUS_KM', '15')
+    parser.add_argument('-r', '--radius', type=float, default=default_radius,
+                        help=f'Radius in kilometers to monitor (default: {default_radius})')
+    default_favourites_file = os.getenv('FAVOURITES_FILE', 'data/favourites.txt')
+    parser.add_argument('-f', '--favourites', type=str, default=default_favourites_file,
                         help='File path with favourite callsigns or ICAO identifiers '
-                             '(default: ./favourites.txt)')
+                             f'(default: {default_favourites_file})')
     args = parser.parse_args()
+
+    if not args.postcode:
+        parser.error('a postcode is required either as an argument or via POSTCODE')
 
     monitor = AircraftMonitor(Config(
         postcode=args.postcode,
