@@ -152,6 +152,8 @@ INCLUDE_TYPE_CODES: set = {
 #   AGGREGATOR_AIRPLANESLIVE_ENABLED=false
 #   AGGREGATOR_ADSBONE_ENABLED=false
 #
+# Local receivers are added separately via LOCAL_RECEIVER_URLS (see below).
+#
 # URL builder notes:
 #   adsb.lol / adsb.fi / adsb.one – distance in nautical miles (radius_km * KM_TO_NM)
 #   airplanes.live                – distance in kilometres      (radius_km directly)
@@ -159,6 +161,15 @@ INCLUDE_TYPE_CODES: set = {
 def _adsbexchange_v2_parser(data: dict) -> List[dict]:
     """Standard parser for any ADSBexchange-v2-compatible JSON response."""
     return data.get('ac', []) or []
+
+
+def _local_receiver_parser(data: dict) -> List[dict]:
+    """
+    Parser for local readsb/dump1090/tar1090 aircraft.json responses.
+    These use 'aircraft' as the top-level key rather than 'ac'.
+    Ref: http://<receiver>/data/aircraft.json
+    """
+    return data.get('aircraft', []) or []
 
 
 AGGREGATORS: List[dict] = [
@@ -209,6 +220,37 @@ AGGREGATORS: List[dict] = [
     },
 ]
 
+# ---------------------------------------------------------------------------
+# Local receiver injection
+# ---------------------------------------------------------------------------
+# LOCAL_RECEIVER_URLS accepts one or more local readsb/dump1090/tar1090 URLs,
+# comma-separated. Each instance is added as a separate aggregator named
+# local-1, local-2 etc. No radius filtering — all aircraft seen by the
+# receiver are returned and filtered client-side by calculate_position().
+#
+# Example:
+#   LOCAL_RECEIVER_URLS=http://zeewolf.local:1090/data/aircraft.json
+#   LOCAL_RECEIVER_URLS=http://192.168.1.10:1090/data/aircraft.json,http://192.168.1.11:8080/data/aircraft.json
+#
+_local_urls = [
+    url.strip()
+    for url in os.getenv('LOCAL_RECEIVER_URLS', '').split(',')
+    if url.strip()
+]
+
+for _i, _url in enumerate(_local_urls, start=1):
+    _name = f"local-{_i}" if len(_local_urls) > 1 else "local"
+    _fixed_url = _url  # capture for lambda closure
+    AGGREGATORS.append({
+        "name":        _name,
+        "env_key":     None,  # not individually toggle-able; remove from env var to disable
+        "enabled":     True,
+        "url_builder": lambda lat, lon, r, u=_fixed_url: u,
+        "parser":      _local_receiver_parser,
+        "headers":     {},
+    })
+    logger.debug(f"Local receiver registered: {_name} → {_url}")
+
 
 # ---------------------------------------------------------------------------
 # Config
@@ -241,12 +283,14 @@ class Aircraft:
     def from_adsbv2_data(cls, data: Dict) -> 'Aircraft':
         """
         ADSBexchange v2 compatible response (adsb.lol / adsb.fi / airplanes.live / adsb.one).
+        Also compatible with local readsb/dump1090/tar1090 aircraft.json responses.
         Ref: https://api.adsb.lol/docs  /  https://github.com/airplanes-live/api-archive
         dbFlags bit 0 = military
         r = registration
         t = ICAO type code (prefix '19' = military category)
         track = true heading in degrees
         """
+        alt = data.get('alt_baro')
         return cls(
             icao24=data.get('hex', ''),
             callsign=(data.get('flight') or '').strip(),
@@ -254,7 +298,7 @@ class Aircraft:
             longitude=data.get('lon'),
             latitude=data.get('lat'),
             db_flags=data.get('dbFlags', 0),
-            alt_baro=data.get('alt_baro'),
+            alt_baro=None if alt == 'ground' else alt,
             gs=data.get('gs'),
             track=data.get('track'),
             registration=data.get('r') or '',
