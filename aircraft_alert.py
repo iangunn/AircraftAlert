@@ -44,14 +44,26 @@ logging.getLogger('apprise').setLevel(logging.WARNING)
 # ---------------------------------------------------------------------------
 csv_log_path = os.path.join(log_directory, 'alerts.csv')
 CSV_FIELDS = ['date', 'time', 'icao24', 'registration', 'callsign', 'type_code', 'aircraft_type',
-              'lat', 'lon', 'alt_baro', 'gs', 'track', 'military']
+              'lat', 'lon', 'alt_baro', 'gs', 'track', 'military', 'thumbnail_url', 'image_url']
 
 
 def _init_csv():
-    """Create CSV with header row if it doesn't already exist."""
+    """Create the CSV or add new columns while preserving existing rows."""
     if not os.path.exists(csv_log_path):
         with open(csv_log_path, 'w', newline='', encoding='utf-8') as f:
             csv.DictWriter(f, fieldnames=CSV_FIELDS).writeheader()
+        return
+
+    with open(csv_log_path, 'r', newline='', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        if reader.fieldnames == CSV_FIELDS:
+            return
+        rows = list(reader)
+
+    with open(csv_log_path, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def log_alert_csv(aircraft: 'Aircraft'):
@@ -72,6 +84,8 @@ def log_alert_csv(aircraft: 'Aircraft'):
             'gs':            aircraft.gs if aircraft.gs is not None else '',
             'track':         aircraft.track if aircraft.track is not None else '',
             'military':      bool(aircraft.db_flags & 1),
+            'thumbnail_url': hexdb_image_url(aircraft.icao24, thumbnail=True),
+            'image_url':     hexdb_image_url(aircraft.icao24),
         })
 
 
@@ -104,6 +118,9 @@ KM_TO_NM = 0.539957  # kilometres → nautical miles
 #   https://globe.adsb.fi/
 #   https://adsb.lol/
 TRACKING_URL = os.getenv('TRACKING_URL', 'https://globe.adsb.fi/')
+
+# Attach the resolved HexDB aircraft image to Apprise notifications.
+PHOTO_ATTACHMENTS_ENABLED = _env_bool('PHOTO_ATTACHMENTS_ENABLED', default=True)
 
 # ---------------------------------------------------------------------------
 # Backoff settings
@@ -323,6 +340,34 @@ class Aircraft:
 # Aircraft type never changes so no expiry is needed.
 # Ref: https://hexdb.io/#api-body
 _hexdb_cache: Dict[str, Optional[str]] = {}
+_hexdb_image_cache: Dict[Tuple[str, bool], str] = {}
+
+
+def hexdb_image_url(icao24: str, thumbnail: bool = False) -> str:
+    """Resolve a HexDB image endpoint to its returned image URL."""
+    key = icao24.strip().lower()
+    if not key:
+        return ''
+
+    cache_key = (key, thumbnail)
+    if cache_key in _hexdb_image_cache:
+        return _hexdb_image_cache[cache_key]
+
+    endpoint = 'hex-image-thumb' if thumbnail else 'hex-image'
+    try:
+        response = requests.get(
+            f"https://hexdb.io/{endpoint}?hex={key}",
+            timeout=5
+        )
+        result = response.text.strip() if response.ok else ''
+        if result.lower() == 'n/a':
+            result = ''
+    except Exception as e:
+        logger.debug(f"hexdb.io image lookup failed for {key}: {e}")
+        result = ''
+
+    _hexdb_image_cache[cache_key] = result
+    return result
 
 
 def lookup_aircraft_type(icao24: str) -> Optional[str]:
@@ -496,9 +541,18 @@ class ApiClient:
         logger.debug(f"Combined aircraft count after deduplication: {len(results)}")
         return list(results.values())
 
-    def send_alert(self, message: str) -> bool:
+    def send_alert(self, message: str, image_url: str = '') -> bool:
         try:
-            return self.apobj.notify(title="Aircraft Alert", body=message)
+            if not PHOTO_ATTACHMENTS_ENABLED:
+                image_url = ''
+            attachment = apprise.AppriseAttachment()
+            if image_url:
+                attachment.add(image_url)
+            return self.apobj.notify(
+                title="Aircraft Alert",
+                body=message,
+                attach=attachment if image_url else None,
+            )
         except Exception as e:
             logger.error(f"Error sending notification: {e}")
             return False
@@ -652,6 +706,10 @@ class AircraftMonitor:
                         alt   = f"{int(aircraft.alt_baro)}ft" if aircraft.alt_baro is not None else '?'
                         gs    = f"{int(aircraft.gs)}kts"      if aircraft.gs is not None else '?'
                         track = f"{int(aircraft.track)}°"     if aircraft.track is not None else '?'
+                        image_url = ''
+                        if PHOTO_ATTACHMENTS_ENABLED:
+                            thumbnail_url = hexdb_image_url(aircraft.icao24, thumbnail=True)
+                            image_url = thumbnail_url or hexdb_image_url(aircraft.icao24)
                         message = (
                             f"✈️ {aircraft_type} | {aircraft.registration or aircraft.callsign or '?'}\n"
                             f"🧭 {position['distance']:.1f}km {position['cardinal']} | {alt}\n"
@@ -659,7 +717,7 @@ class AircraftMonitor:
                             f"🔗 {TRACKING_URL}?icao={aircraft.icao24}"
                         )
                         logger.info("\n" + message + "\n")
-                        self.api.send_alert(message)
+                        self.api.send_alert(message, image_url=image_url)
                         log_alert_csv(aircraft)
                         self.mark_aircraft_active(aircraft.icao24)
                     else:
